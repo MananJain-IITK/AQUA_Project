@@ -1,6 +1,6 @@
 ***
 
-# Macro-Factor Driven Quant Investment Strategy
+# Macro-Factor Driven Quant Investment Strategy for AQUA
 
 ## Overview
 This documentation outlines the dynamic portfolio allocation module for a systematic macro-quant trading strategy. The allocation framework is built upon Vector Error Correction Model (VECM) statistical testing, which isolates the historical sensitivities of Indian equity sectors to macroeconomic factors (Crude Oil, USD/INR Exchange Rate, and FII flows). 
