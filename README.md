@@ -1,83 +1,181 @@
-***
+# AQUA — Macro-Factor Driven Sector Allocation
 
-# Macro-Factor Driven Quant Investment Strategy for AQUA
+This repository contains a lightweight macro-factor-driven allocation engine for Indian equity sectors. The core idea: detect market regimes with an HMM-based pipeline and produce sector-level portfolio weights using previously estimated macro sensitivities (FEVD / VECM results).
 
-## Overview
-This documentation outlines the dynamic portfolio allocation module for a systematic macro-quant trading strategy. The allocation framework is built upon Vector Error Correction Model (VECM) statistical testing, which isolates the historical sensitivities of Indian equity sectors to macroeconomic factors (Crude Oil, USD/INR Exchange Rate, and FII flows). 
+Key modules:
+- `regime_detection.py`: HMM-based regime detection (per-sector) using sector returns, volatility and macro features.
+- `weight_allocation.py`: Deterministic allocator that uses a hardcoded FEVD/Granger-signal matrix to produce normalized sector weights.
+- `main.py`: Example orchestration that ties regime detection -> allocation -> trade-signal generation.
 
-The primary allocation logic is handled by the `weight_allocation.py` script, which dynamically adjusts portfolio weights across sectors to maximize exposure during bull markets and minimize drawdowns during bear markets.
+## What this does
+- Uses historical VECM / FEVD estimates (embedded as numeric constants) to quantify how much each macro factor (Oil, USD/INR exchange rate `ER`, and Foreign Institutional Investor flows `FII`) explains sector variance.
+- Uses a simple rule set:
+  - In `Bull` regime: overweight sectors with high macro sensitivity (i.e., low `Self` variance). If a sector shows Granger significance, apply a 1.2x boost.
+  - In `Bear` regime: overweight sectors with high `Self` variance (defensive characteristics).
+  - Apply multiplicative penalties when specific macro shocks are present (e.g., `{'Oil': 'high'}` reduces weights for sectors sensitive to oil).
 
----
+## FEVD / Macro Sensitivity Matrix (source: VECM period=10, embedded)
+SECTOR | Self (%) | Oil (%) | ER (%) | FII (%) | Granger_Sig
+---|---:|---:|---:|---:|:---
+Auto    | 91.40 | 1.43  | 4.39  | 2.78  | False
+Bank    | 54.36 | 19.79 | 8.81  | 17.04 | True
+IT      | 72.09 | 0.97  | 5.40  | 21.54 | False
+FMCG    | 71.52 | 6.35  | 11.58 | 10.55 | False
+Media   | 77.74 | 10.64 | 9.86  | 1.77  | False
+Metal   | 69.60 | 6.47  | 2.70  | 21.23 | False
+Realty  | 48.81 | 4.88  | 22.73 | 23.58 | True
+Pharma  | 80.55 | 14.40 | 3.79  | 1.26  | True
+FinServ | 25.74 | 6.58  | 6.64  | 61.04 | True
 
-## Module Mechanics: `weight_allocation.py`
-The `weight_allocation.py` script functions as the position-sizing engine for the overarching strategy. It does not generate directional buy/sell signals; rather, it determines the optimal capital allocation for each sector given the prevailing macroeconomic environment.
+These numbers are embedded in `weight_allocation.py` as the `SECTOR_DATA` constant.
 
-The decision engine utilizes a hardcoded matrix of Forecast Error Variance Decomposition (FEVD) scores and Granger Causality p-values to execute data-driven allocation shifts:
+## API — `get_sector_weights(regimes, macro_shocks=None)`
+- `regimes`: either a single string (`'Bull'`, `'Bear'`, `'Sideways'`) or a dict mapping sectors to HMM labels (e.g., `{'Auto':'Bullish', ...}`)
+- `macro_shocks`: optional dict to apply real-time penalties. Supported keys: `'Oil'`, `'FII'`, `'ER'` with values `'high'`, `'outflow'`, `'weak'` respectively.
+- Returns: dict of normalized weights (sum to 1.0) with 4-decimal rounding.
 
-1. **Bull Regime (Risk-On Allocation):**
-   * Cyclical sectors (e.g., Financial Services, Realty, Banks) receive higher weightings.
-   * Weights are calculated based on **Macro Sensitivity** (100 - Self-Variance), allocating more capital to sectors highly influenced by macroeconomic tailwinds.
-   * A 1.2x multiplier is applied to sectors where macro factors exhibit a statistically significant leading relationship (Granger Causality P-value < 0.05).
-
-2. **Bear Regime (Risk-Off Allocation):**
-   * Defensive sectors (e.g., Auto, Pharma, FMCG) receive higher weightings.
-   * Weights are calculated based on **Self-Explained Variance**. Sectors that exhibit low correlation to macroeconomic volatility receive higher allocations to act as safe havens.
-
-3. **Dynamic Macro Shocks:**
-   * Independent of the broader market regime, the occurrence of specific negative macro events (e.g., a spike in Crude Oil prices) triggers automatic penalties. Sectors previously identified as highly sensitive to that specific factor are systematically underweighted.
-
----
-
-## Integration and Usage Guide
-
-To implement this module, it must be integrated into a main execution script (e.g., `main.py` or `backtester.py`) that supplies the current market conditions to the allocator at each rebalancing interval.
-
-### 1. Module Importation
-The `weight_allocation.py` file must be located in the same directory as the main execution script. The allocation function is imported as follows:
+Example usage (from `main.py`):
 
 ```python
 from weight_allocation import get_sector_weights
+
+# Global regime example
+weights = get_sector_weights('Bull')
+print(weights)
+
+# Per-sector regimes example with a macro shock
+per_sector = {'Auto': 'Bullish', 'Bank': 'Bearish', 'IT': 'Sideways'}
+weights = get_sector_weights(per_sector, macro_shocks={'FII': 'outflow'})
+print(weights)
 ```
 
-### 2. Parameter Definitions
-The function evaluates market conditions calculated dynamically at each rebalance period (e.g., monthly). The required parameters are:
+## Exact example outputs (computed from the current `SECTOR_DATA` rules)
+These outputs were generated using the current `weight_allocation.py` logic in this repository.
 
-* **`regime`** *(string)*: Accepts `'Bull'`, `'Bear'`, or `'Sideways'`. This classification is typically provided by a separate market regime detection model.
-* **`macro_shocks`** *(dictionary)*: An optional parameter used to pass specific triggers if a macroeconomic indicator breaches a predefined risk threshold (e.g., `{'Oil': 'high'}`, `{'ER': 'weak'}`, `{'FII': 'outflow'}`).
+BULL regime sample output:
 
-### 3. Execution Integration
-Inside the historical backtest loop or live-trading environment, the function is called to generate target weights for the subsequent period. The following code block demonstrates a standard implementation:
-
-```python
-# --- Monthly Rebalancing Logic ---
-
-# 1. The external regime detection model determines the current environment
-current_regime = "Bear" 
-current_shocks = {"FII": "outflow"} # Example scenario: FIIs are net sellers
-
-# 2. The allocator generates dynamically adjusted weights
-target_weights = get_sector_weights(regime=current_regime, macro_shocks=current_shocks)
-
-# 3. Target allocation is logged or passed to the execution engine
-print("Target Portfolio Allocation:")
-for sector, weight in target_weights.items():
-    print(f"{sector}: {weight * 100:.2f}%")
-
-# 4. Target weights are passed to the broker API or backtesting rebalancer
-# execute_portfolio_rebalance(target_weights)
+```
+{
+  "Auto": 0.0248,
+  "Bank": 0.1582,
+  "IT": 0.0806,
+  "FMCG": 0.0822,
+  "Media": 0.0643,
+  "Metal": 0.0878,
+  "Realty": 0.1774,
+  "Pharma": 0.0674,
+  "FinServ": 0.2573
+}
 ```
 
-### 4. Expected Output Profiles
-The output will dynamically shift based on the inputs provided. 
+BEAR regime sample output:
 
-During a standard **Bull** market, the allocator prioritizes cyclicals:
-```python
-{'Auto': 0.0211, 'Bank': 0.1342, 'IT': 0.0684, 'FMCG': 0.0698, 'Media': 0.0545, 'Metal': 0.0745, 'Realty': 0.1504, 'Pharma': 0.0572, 'FinServ': 0.2185}
-# Note: Financial Services receives ~21.8% of the capital, while Auto receives ~2%.
+```
+{
+  "Auto": 0.1544,
+  "Bank": 0.0919,
+  "IT": 0.1218,
+  "FMCG": 0.1208,
+  "Media": 0.1314,
+  "Metal": 0.1176,
+  "Realty": 0.0825,
+  "Pharma": 0.1361,
+  "FinServ": 0.0435
+}
 ```
 
-During a **Bear** market, capital systematically rotates to defensive assets:
-```python
-{'Auto': 0.1544, 'Bank': 0.0918, 'IT': 0.1218, 'FMCG': 0.1208, 'Media': 0.1313, 'Metal': 0.1176, 'Realty': 0.0824, 'Pharma': 0.1361, 'FinServ': 0.0435}
-# Note: Financial Services exposure drops to 4.3%, while Auto jumps to 15.4%.
+Notes: the allocator returns weights rounded to 4 decimal places and ensures they sum to 1.0.
+
+## Running the project
+
+1. Create and activate a Python virtual environment (recommended).
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
+
+2. Quick local test — run the weight allocator directly:
+
+```bash
+python weight_allocation.py
+```
+
+3. Example end-to-end (HMM regime -> allocation -> signals):
+
+```bash
+python main.py
+```
+
+`main.py` demonstrates calling `regime_detection.get_current_market_regimes()` to obtain per-sector HMM labels and then passing them to `get_sector_weights()`; it also contains a `generate_signals()` function that converts target weights into simple BUY/SELL/HOLD signals based on a 1% execution threshold.
+
+## Data files
+- `india_market_macro.csv` — macro time series used by `regime_detection.py` (CPI, GS10, TBILL3M, etc.).
+- `macro_eco_data.csv` and files under `Miscellaneous/` — additional datasets and notebooks used during research.
+
+## Design notes & assumptions
+- The FEVD numbers are taken from a prior VECM estimation and are intentionally embedded as constants (design choice to keep allocator deterministic and easy to test).
+- `regime_detection.py` implements an HMM per-sector using `hmmlearn.GaussianHMM` with 3 hidden states and a heuristic mapping of state means into `Bullish` / `Bearish` / `Sideways` labels.
+- Risk adjustments for macro shocks are multiplicative and bounded (minimum weight multiplier = 0.1) to avoid zeroing allocations completely.
+
+## Findings from `AQUA.ipynb`
+
+`AQUA.ipynb` performs the data-prep and VECM/FEVD analysis that produced the macro sensitivity numbers used in `weight_allocation.py`:
+- Data: monthly macro series including Crude Oil (`Oil`), USD/INR (`ER`) and FII flows (`FII`) are log-transformed and aligned with sector log-prices where available.
+- Stationarity: Unit-root tests (ADF & Phillips-Perron) are run on level and differenced series to guide model specification.
+- VAR/VECM workflow:
+  - Optimal lag selection via information criteria on a VAR.
+  - Johansen cointegration test to select cointegration rank (often forced to r >= 1 for uniform extraction).
+  - VECM estimation and diagnostic checks (normality, Durbin–Watson residuals).
+- Causality & dynamics:
+  - Granger-causality (Wald) tests for each target variable to check whether macro variables significantly lead sector/macro targets.
+  - Impulse Response Functions (IRFs) and orthogonalized IRFs are computed.
+  - Forecast Error Variance Decomposition (FEVD) over 10 periods is computed and the period-10 decomposition is reported.
+
+Key empirical takeaways (as encoded in `SECTOR_DATA`):
+- `FinServ` shows the largest contribution from `FII` (≈ 61.04%), indicating sector variance is heavily explained by FII flows.
+- `Realty` has material exposure to both `ER` (≈ 22.73%) and `FII` (≈ 23.58%).
+- `Bank` shows notable sensitivity to `Oil` (≈ 19.79%).
+- `Pharma` is relatively more sensitive to `Oil` (≈ 14.40%) than many other sectors.
+
+These FEVD-derived sensitivity scores (period=10) are what feed the allocator’s deterministic rules.
+
+## Methods & Implementation Details
+
+**`regime_detection.py` — what it does and method used**
+- Purpose: infer historical and current market regimes per sector to inform allocation decisions.
+- Inputs: cleaned macro features (from `india_market_macro.csv`) and monthly resampled sector close prices pulled via `yfinance`.
+- Features computed per sector: log-returns (`returns`) and 6-month rolling `volatility` plus macro features (`inflation`, `yield_spread`).
+- Model: a per-sector Gaussian Hidden Markov Model (`hmmlearn.GaussianHMM`) with `n_components=3` and `covariance_type='full'`.
+- Preprocessing: features are standardized with `sklearn.preprocessing.StandardScaler` before HMM fitting.
+- State interpretation: after predicting the hidden states, the code computes the mean of each state and maps a state to `Bullish` / `Bearish` / `Sideways` using a simple heuristic:
+  - `Bullish` if mean `returns` > 0.5 and mean `volatility` < 2
+  - `Bearish` if mean `returns` < 0 and mean `volatility` > 2
+  - otherwise `Sideways`
+- Output: a historical DataFrame per sector (with inferred state labels) and a `latest_regimes` mapping giving the most recent label per sector.
+
+Notes on production-readiness: the HMM mapping is intentionally simple and should be validated (or replaced with a supervised regime labeler) if used for live trading.
+
+**`weight_allocation.py` — what it does and method used**
+- Purpose: deterministic sector-level position sizing using pre-computed macro sensitivities.
+- Core data: `SECTOR_DATA` — a hardcoded dictionary of FEVD shares (`Self`, `Oil`, `ER`, `FII`) and a boolean `Granger_Sig` flag derived from the notebook's Granger tests.
+- Allocation logic:
+  - If a sector is in a `bear` regime: `base_weight = Self` (favor high self-explained variance — defensive sectors).
+  - If a sector is in a `bull` regime: `base_weight = 100 - Self` (favor macro-sensitive, cyclical sectors).
+    - If `Granger_Sig` is True, the bull base weight is multiplied by `1.2` to reward sectors where macro factors statistically lead.
+  - If `sideways`: a small equal baseline weight (`1.0`) is used.
+- Macro-shock penalties: multiplicative penalties are applied when `macro_shocks` indicates adverse conditions:
+  - `Oil == 'high'` multiplies weight by `max(0.1, 1 - data['Oil']/100)`
+  - `FII == 'outflow'` multiplies by `max(0.1, 1 - data['FII']/100)`
+  - `ER == 'weak'` multiplies by `max(0.1, 1 - data['ER']/100)`
+  - The `0.1` floor avoids zeroing a sector completely.
+- Normalization: raw adjusted weights are normalized so the final weights sum to exactly `1.0`, and values are rounded to 4 decimals.
+
+Design rationale:
+- Embedding FEVD results keeps the allocator deterministic and testable.
+- The combination of `Self` vs `100 - Self` provides a simple, interpretable separation between defensive and cyclical allocation drivers.
+- Granger-based boosts and multiplicative penalties allow compact encoding of directional macro risk signals while keeping the allocator simple.
+
+## License & contact
+This code is provided as-is for research and experimentation for a quant firm named AQUA. For questions, contact the repository owner.
