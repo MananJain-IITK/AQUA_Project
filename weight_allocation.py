@@ -17,13 +17,15 @@ SECTOR_DATA = {
     'FinServ': {'Self': 25.74, 'Oil': 6.58,  'ER': 6.64,  'FII': 61.04, 'Granger_Sig': True}
 }
 
-def get_sector_weights(regime: str, macro_shocks: dict = None) -> dict:
+def get_sector_weights(regimes, macro_shocks: dict = None) -> dict:
     """
     Calculates target portfolio weights for sectoral indices based on market regime 
     and quantitative macro sensitivities.
     
     Args:
-        regime (str): Current market regime ('Bull', 'Bear', 'Sideways').
+        regimes (str or dict): Current market regime as a string ('Bull'), or a dictionary 
+                               mapping sectors to their specific HMM regimes 
+                               (e.g., {'Auto': 'Bullish', 'Bank': 'Bearish'}).
         macro_shocks (dict): Optional. Dictionary of current macro conditions.
                              e.g., {'Oil': 'high', 'FII': 'outflow', 'ER': 'weak'}
                              
@@ -35,56 +37,62 @@ def get_sector_weights(regime: str, macro_shocks: dict = None) -> dict:
         
     raw_weights = {}
     
+    # Helper function to map HMM outputs ('Bullish') to standard logic ('bull')
+    def clean_regime(r):
+        r = str(r).lower()
+        if 'bull' in r: return 'bull'
+        if 'bear' in r: return 'bear'
+        return 'sideways'
+
+    # Determine if we were passed a single global regime or a dictionary of sector regimes
+    is_global = isinstance(regimes, str)
+    if is_global:
+        global_regime = clean_regime(regimes)
+    
     for sector, data in SECTOR_DATA.items():
         base_weight = 0
         
+        # Fetch the appropriate regime for this specific loop iteration
+        if is_global:
+            current_regime = global_regime
+        else:
+            # Default to sideways if the sector is missing from the dictionary
+            raw_regime = regimes.get(sector, 'Sideways')
+            current_regime = clean_regime(raw_regime)
+            
         # ----------------------------------------------------
-        # 1. BASE REGIME ALLOCATION LOGIC
+        # 1. BASE REGIME ALLOCATION LOGIC (Sector-Specific)
         # ----------------------------------------------------
-        if regime.lower() == 'bear':
+        if current_regime == 'bear':
             # In Bear markets, overweight Defensives (High Self-Variance)
-            # These sectors ignore macro chaos.
             base_weight = data['Self']
             
-        elif regime.lower() == 'bull':
+        elif current_regime == 'bull':
             # In Bull markets, overweight Cyclicals (High Macro Sensitivity)
-            # Total Macro Sensitivity = 100 - Self Variance
             base_weight = 100 - data['Self']
             
-            # Boost weight slightly if the sector is statistically proven to be 
-            # lead by macro factors (Granger Causality = True)
+            # Boost weight slightly if statistically proven to be lead by macro factors
             if data['Granger_Sig']:
                 base_weight *= 1.2 
                 
-        elif regime.lower() == 'sideways':
+        else:
             # In Sideways markets, apply Equal Weighting as a baseline
             base_weight = 1.0 
-            
-        else:
-            raise ValueError(f"Unknown regime: {regime}. Use 'Bull', 'Bear', or 'Sideways'.")
             
         # ----------------------------------------------------
         # 2. DYNAMIC MACRO SHOCK PENALTIES
         # ----------------------------------------------------
-        # If specific bad macro events are happening, penalize sectors 
-        # that are highly sensitive to them.
-        
         penalty_multiplier = 1.0
         
         if macro_shocks.get('Oil') == 'high':
-            # Penalize sectors highly sensitive to Oil (e.g., Bank, Pharma)
-            # The higher the sensitivity, the larger the penalty.
             penalty_multiplier *= max(0.1, 1 - (data['Oil'] / 100))
             
         if macro_shocks.get('FII') == 'outflow':
-            # Penalize sectors highly sensitive to FII (e.g., FinServ, Realty, Metal)
             penalty_multiplier *= max(0.1, 1 - (data['FII'] / 100))
             
         if macro_shocks.get('ER') == 'weak':
-            # Penalize sectors highly sensitive to Exchange Rate (e.g., Realty)
             penalty_multiplier *= max(0.1, 1 - (data['ER'] / 100))
             
-        # Apply the penalty
         raw_weights[sector] = base_weight * penalty_multiplier
 
     # ----------------------------------------------------
@@ -98,16 +106,14 @@ def get_sector_weights(regime: str, macro_shocks: dict = None) -> dict:
     return final_weights
 
 # ==========================================
-# QUICK TEST / USAGE EXAMPLE (Remove or comment out in production)
+# QUICK TEST / USAGE EXAMPLE
 # ==========================================
 if __name__ == "__main__":
     print("--- Testing Weight Allocator ---")
     
-    print("\n1. Standard Bear Market (Flight to Defensives):")
-    print(get_sector_weights('Bear'))
+    print("\n1. Testing with a Single Global String (e.g., 'Bearish'):")
+    print(get_sector_weights('Bearish'))
     
-    print("\n2. Standard Bull Market (Risk-On):")
-    print(get_sector_weights('Bull'))
-    
-    print("\n3. Bull Market, but FIIs are suddenly pulling out ('outflow'):")
-    print(get_sector_weights('Bull', macro_shocks={'FII': 'outflow'}))
+    print("\n2. Testing with Dictionary Output from HMM:")
+    test_dict = {'Auto': 'Bullish', 'Bank': 'Bearish', 'IT': 'Sideways'}
+    print(get_sector_weights(test_dict, macro_shocks={'FII': 'outflow'}))
