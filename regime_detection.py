@@ -23,7 +23,7 @@ def load_macro_data(filepath="india_market_macro.csv"):
         print(f"Error: {filepath} not found. Please ensure the macro dataset is available.")
         return None
 
-def fetch_sector_data(start_date="2011-01-01"):
+def fetch_sector_data(start_date="2020-01-01"):
     """Fetches and aligns NIFTY sectoral data."""
     nifty_sectoral_indices = {
         "Auto": "^CNXAUTO",
